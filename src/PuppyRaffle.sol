@@ -128,7 +128,7 @@ contract PuppyRaffle is ERC721, Ownable {
             }
         }
         // q what if the player is at index 0?
-        // @audit if the player is at index 0, it will return 0 and a player might think they are not active!
+        // written if the player is at index 0, it will return 0 and a player might think they are not active!
         return 0;
     }
 
@@ -140,7 +140,7 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @dev we send 80% of the funds to the winner, the other 20% goes to the feeAddress
     function selectWinner() external { // i check again
         // q does this follow CEI?
-        // @audit recommend to follow CEI
+        // written recommend to follow CEI
         // q are the duration & start time being set correct?
         require(block.timestamp >= raffleStartTime + raffleDuration, "PuppyRaffle: Raffle not over");
         require(players.length >= 4, "PuppyRaffle: Need at least 4 players");
@@ -154,25 +154,25 @@ contract PuppyRaffle is ERC721, Ownable {
         // @audit why not just do address(this).balance?
         uint256 totalAmountCollected = players.length * entranceFee;
         // q is the 80% correct?
-        // @audit Magic numbers
+        // written Magic numbers
         uint256 prizePool = (totalAmountCollected * 80) / 100;
         uint256 fee = (totalAmountCollected * 20) / 100;
         // e this is the total fees the owner should be able to collect
-        // @audit overflow
+        // written overflow
         // fixes: Newer version of solidity, bigger uints
-        // @audit unsafe cast of uint256 to uint64
+        // written unsafe cast of uint256 to uint64
         totalFees = totalFees + uint64(fee);
 
         // q where do we increment the tokenId/totalSupply?
         uint256 tokenId = totalSupply();
 
         // We use a different RNG calculate from the winnerIndex to determine rarity
-        // @audit randomness
+        // written randomness
 
         // q if our transaction picks a winner and we don't like it... revert?
         // q gas war... // @followUp
 
-        // @audit people can revert the TX untill they win
+        // written people can revert the TX untill they win
         uint256 rarity = uint256(keccak256(abi.encodePacked(msg.sender, block.difficulty))) % 100;
         if (rarity <= COMMON_RARITY) {
             tokenIdToRarity[tokenId] = COMMON_RARITY;
@@ -188,7 +188,7 @@ contract PuppyRaffle is ERC721, Ownable {
 
         // q can we reenter somewhere?
         // q what if the winner wouldn't get the money if their fallback was messed up!
-        // @audit the winner wouldn't get the money if their fallback was messed up!
+        // written the winner wouldn't get the money if their fallback was messed up!
         (bool success,) = winner.call{value: prizePool}("");
         require(success, "PuppyRaffle: Failed to send prize pool to winner");
         _safeMint(winner, tokenId);
