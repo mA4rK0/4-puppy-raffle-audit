@@ -126,6 +126,30 @@ function refund(uint256 playerIndex) public {
 - Likelihood: HIGH
 - Severity: HIGH
 
+### [H-2] Weak randomness in `PuppyRaffle::selectWinner` allows users to influence or predict the winner and influence or predict the winning puppy
+
+**Description:** Hashing `msg.sender`, `block.timestamp`, and `block.difficulty` together creates a predictable find number. A predictable number is not a good random number. Malicious users can manipulate these values or know them ahead of time to choose the winner of the raffle themselves.
+
+_Note:_ This additionally means users could front-run this function and call `refund` if they see they are not the winner.
+
+**Impact:** Any user can influence the winner of the raffle, winning the money and selecting `rarest` puppy. Making the entire raffle worthless if it becomes a gas war as to who wins the raffles.
+
+**Proof of Concept:**
+
+1. Validators can know ahead of time the `block.timestamp` and `block.difficulty` and use that to predict when/how to participate.
+2. User can mine/manipulate their `msg.sender` value to result in their address being used to generated the winner.
+3. Users can revert their `selectWinner` transaction if they don't like the winner or resulting puppy.
+
+Using on-chain values as a randomness seed is a well-documented attack vector in the blockchain space.
+
+**Recommended Mitigation:** Consider using a cryptographically provable random number generator such as Chainlink VRF.
+
+## Likelihood & Impact:
+
+- Impact: HIGH
+- Likelihood: HIGH
+- Severity: HIGH
+
 ### [M-1] Looping through players array to check for duplicates in `PuppyRaffle::enterRaffle` is a potential denial of services (DoS) attack, incrementing gas costs for future entrants
 
 **Description:** The `PuppyRaffle::enterRaffle` function loops through the `players` array to check for duplicates. However, the longer the `PuppyRaffle::players` array is, the more checks a new player will have to make. This means the gas costs for players who enter right when the raffle stats will be dramatically lower than those who enter later. Every additional address in the `players` array, is an additional check the loop will have to make.
@@ -233,6 +257,37 @@ Alternatively, you could use [OpenZeppelin's `EnumerableSet` library](https://do
 - Impact: MEDIUM
 - Likelihood: MEDIUM
 - Severity: MEDIUM
+
+### [L-1] `PuppyRaffle::getActivePlayerIndex` returns 0 for non-existent players and for players at index 0, causing a player at index 0 to incorrectly think they have not entered the raffle
+
+**Description:** If a player is in the `PuppyRaffle::players` array at index 0, this will return 0, but according to the natspec, it will also return 0 if the player is not in the array.
+
+```javascript
+function getActivePlayerIndex(address player) external view returns (uint256) {
+        for (uint256 i = 0; i < players.length; i++) {
+            if (players[i] == player) {
+                return i;
+            }
+        }
+        return 0;
+}
+```
+
+**Impact:** A player at index 0 incorrectly think they have not entered the raffle, and attempt to enter the raffle again, wasting gas.
+
+**Proof of Concept:**
+
+1. User enters the raffle, they are the first entrant
+2. `PuppyRaffle::getActivePlayerIndex` returns 0
+3. User thinks they have not entered correctly due to the function documentation.
+
+**Recommended Mitigation:** The easiest recommendation would be to revert if the player is not in the array instead of returning 0. You could also reserve the 0th position for any competition, but a better solution might be to return an `int256` where the function returns -1 if the player is not active.
+
+## Likelihood & Impact:
+
+- Impact: LOW/MEDIUM
+- Likelihood: HIGH/LOW
+- Severity: LOW
 
 # Gas
 
@@ -380,6 +435,26 @@ feeAddress = _feeAddress;
 .
 + require(newFeeAddress != address(0), "New fee address cannot be zero");
 feeAddress = newFeeAddress;
+```
+
+## Likelihood & Impact:
+
+- Impact: NONE
+- Likelihood: HIGH
+- Severity: Informational
+
+### [I-4] `PuppyRaffle::selectWinner` does not follow CEI, which is not a best practice
+
+**Description:** It's best to keep code clean and follow CEI (Checks, Effects, Interactions).
+
+**Recommended Mitigation:**
+
+```diff
+-       (bool success,) = winner.call{value: prizePool}("");
+-       require(success, "PuppyRaffle: Failed to send prize pool to winner");
+        _safeMint(winner, tokenId);
++       (bool success,) = winner.call{value: prizePool}("");
++       require(success, "PuppyRaffle: Failed to send prize pool to winner");
 ```
 
 ## Likelihood & Impact:
